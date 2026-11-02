@@ -1,0 +1,12 @@
+../Core/Src/app.c:31:13:oled_center_text	1
+../Core/Src/app.c:38:13:show_title	1
+../Core/Src/app.c:50:13:lcd_show_score	2
+../Core/Src/app.c:63:13:show_game_over	1
+../Core/Src/app.c:81:13:start_game	1
+../Core/Src/app.c:101:13:game_over	2
+../Core/Src/app.c:110:13:toggle_pause	3
+../Core/Src/app.c:132:13:handle_key	11
+../Core/Src/app.c:159:6:App_OnTick1ms	3
+../Core/Src/app.c:168:6:App_OnUserButton	1
+../Core/Src/app.c:175:6:App_Init	1
+../Core/Src/app.c:193:6:App_Loop	10

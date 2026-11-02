@@ -1,0 +1,12 @@
+../Core/Src/snake.c:31:17:rng_next	1
+../Core/Src/snake.c:41:17:tail_index	1
+../Core/Src/snake.c:46:13:place_food	3
+../Core/Src/snake.c:55:13:draw_cell_filled	1
+../Core/Src/snake.c:62:13:draw_food	1
+../Core/Src/snake.c:76:6:Snake_Reset	3
+../Core/Src/snake.c:93:6:Snake_SetDirection	2
+../Core/Src/snake.c:101:12:Snake_Step	14
+../Core/Src/snake.c:143:6:Snake_Draw	3
+../Core/Src/snake.c:157:10:Snake_GetScore	1
+../Core/Src/snake.c:158:10:Snake_GetLength	1
+../Core/Src/snake.c:160:10:Snake_GetStepPeriodMs	2

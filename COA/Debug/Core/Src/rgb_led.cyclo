@@ -1,0 +1,5 @@
+../Core/Src/rgb_led.c:18:17:to_ccr	1
+../Core/Src/rgb_led.c:28:6:RGB_Init	1
+../Core/Src/rgb_led.c:37:6:RGB_Set	1
+../Core/Src/rgb_led.c:44:6:RGB_Blink	1
+../Core/Src/rgb_led.c:53:6:RGB_Update	5
