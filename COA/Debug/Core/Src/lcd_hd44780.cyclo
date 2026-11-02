@@ -6,9 +6,9 @@
 ../Core/Src/lcd_hd44780.c:70:13:lcd_write	1
 ../Core/Src/lcd_hd44780.c:80:13:lcd_command	1
 ../Core/Src/lcd_hd44780.c:81:13:lcd_data	1
-../Core/Src/lcd_hd44780.c:90:6:ssd1306_BeforeDcFallingEdge	2
-../Core/Src/lcd_hd44780.c:99:6:LCD_Init	1
-../Core/Src/lcd_hd44780.c:119:6:LCD_Clear	1
-../Core/Src/lcd_hd44780.c:125:6:LCD_SetCursor	2
-../Core/Src/lcd_hd44780.c:132:6:LCD_Print	2
-../Core/Src/lcd_hd44780.c:137:6:LCD_PrintLine	4
+../Core/Src/lcd_hd44780.c:90:6:ssd1306_BeforeDcFallingEdge	3
+../Core/Src/lcd_hd44780.c:102:6:LCD_Init	1
+../Core/Src/lcd_hd44780.c:122:6:LCD_Clear	1
+../Core/Src/lcd_hd44780.c:128:6:LCD_SetCursor	2
+../Core/Src/lcd_hd44780.c:135:6:LCD_Print	2
+../Core/Src/lcd_hd44780.c:140:6:LCD_PrintLine	4

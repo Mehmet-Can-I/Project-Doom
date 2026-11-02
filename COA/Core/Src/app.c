@@ -26,6 +26,49 @@ static volatile uint16_t ms_since_step;
 static uint16_t best_score;
 static uint32_t last_key_poll_ms;
 
+/* LD2 shares PA5 with the OLED clock. The display driver owns this wire,
+ * including LED changes, so every rising edge belongs to a complete byte. */
+static uint8_t game_led_on;
+static struct {
+  uint8_t active;
+  uint16_t interval_ms;
+  uint16_t duration_ms;
+  uint32_t started_ms;
+} game_led_effect;
+
+static void game_led_set(uint8_t on)
+{
+  if (game_led_on == on) return;
+  game_led_on = on;
+  ssd1306_SetClockIdleHigh(on);
+}
+
+static void game_led_stop(void)
+{
+  game_led_effect.active = 0;
+  game_led_set(0);
+}
+
+static void game_led_start(uint16_t interval_ms, uint16_t duration_ms)
+{
+  game_led_effect.interval_ms = interval_ms;
+  game_led_effect.duration_ms = duration_ms;
+  game_led_effect.started_ms = HAL_GetTick();
+  game_led_effect.active = 1;
+  game_led_set(1);
+}
+
+static void game_led_update(uint32_t now_ms)
+{
+  if (!game_led_effect.active) return;
+  const uint32_t elapsed = now_ms - game_led_effect.started_ms;
+  if (elapsed >= game_led_effect.duration_ms) {
+    game_led_stop();
+  } else {
+    game_led_set((elapsed / game_led_effect.interval_ms) % 2U == 0);
+  }
+}
+
 /* ----------------------------------------------------------------- screens */
 
 static void oled_center_text(uint8_t y, const char *s, SSD1306_Font_t font)
@@ -92,6 +135,7 @@ static void start_game(void)
   __enable_irq();
 
   RGB_Set(0, 0, 0);
+  game_led_stop();
   Snake_Draw();
   ssd1306_UpdateScreen();
   lcd_show_score(NULL);
@@ -102,6 +146,7 @@ static void game_over(void)
 {
   state = ST_GAME_OVER;
   if (Snake_GetScore() > best_score) best_score = Snake_GetScore();
+  game_led_start(200, 5000);                /* LD2: toggle every 200 ms for 5 s */
   RGB_Blink(255, 0, 0, 3, 150);              /* red x3 */
   show_game_over();
   printf("[snake] game over, score=%u best=%u\r\n", Snake_GetScore(), best_score);
@@ -175,6 +220,7 @@ void App_OnUserButton(void)
 void App_Init(void)
 {
   LCD_Init();              /* before the OLED: see shared PC7 notes */
+  game_led_stop();
   ssd1306_Init();
   Keypad_Init(&hadc1);
   RGB_Init(&htim1);
@@ -214,6 +260,7 @@ void App_Loop(void)
       game_over();
     } else {
       if (e == SNAKE_EVT_ATE) {
+        game_led_start(200, 200);          /* one 200 ms flash on LD2 */
         RGB_Blink(0, 255, 0, 2, 80);         /* green x2 */
         step_period_ms = Snake_GetStepPeriodMs();
         lcd_show_score(NULL);
@@ -225,4 +272,5 @@ void App_Loop(void)
   }
 
   RGB_Update(now);
+  game_led_update(HAL_GetTick());
 }

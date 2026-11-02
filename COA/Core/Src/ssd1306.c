@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>  // For memcpy
 
+static uint8_t SSD1306_FrameValid;
+
 #if defined(SSD1306_USE_I2C)
 
 void ssd1306_Reset(void) {
@@ -32,7 +34,7 @@ void ssd1306_WriteData(uint8_t* buffer, size_t buff_size) {
  * so every D/C high->low transition made by this driver is seen by the LCD.
  * To keep the LCD in sync we:
  *   - keep D/C LOW when idle (commands are sent with D/C low),
- *   - send the frame in exactly two data bursts, so each frame produces
+ *   - send each changed window in exactly two data bursts, so it produces
  *     exactly two falling edges (= one complete 4-bit LCD byte),
  *   - call ssd1306_BeforeDcFallingEdge(0/1) just before each falling edge,
  *     so the LCD driver can put a harmless command on its data lines.
@@ -44,6 +46,57 @@ __weak void ssd1306_BeforeDcFallingEdge(uint8_t edge_index) {
     (void)edge_index;
 }
 
+/* LD2 shares SCLK. Use GPIO SPI so a byte can end with its eighth rising
+ * edge HIGH, keeping LD2 lit without adding an unframed ninth clock edge.
+ * Turning LD2 on while idle sends the controller's harmless E3h NOP byte.
+ * PA5/PA7 stay GPIO outputs; the hardware SPI peripheral is not enabled. */
+static uint8_t spi_initialized;
+static uint8_t spi_idle_high;
+static uint8_t spi_clock_high;
+
+__STATIC_FORCEINLINE void ssd1306_Clock(uint8_t high) {
+    WRITE_REG(SSD1306_SCK_Port->BSRR,
+              high ? SSD1306_SCK_Pin : ((uint32_t)SSD1306_SCK_Pin << 16));
+    spi_clock_high = high;
+}
+
+__STATIC_FORCEINLINE void ssd1306_BitDelay(void) {
+    /* >= 100 ns at 80 MHz; SSD1309 requires >= 50 ns per clock half. */
+    __NOP(); __NOP(); __NOP(); __NOP();
+    __NOP(); __NOP(); __NOP(); __NOP();
+}
+
+static void ssd1306_Transmit(const uint8_t *buffer, size_t size) {
+    while (size--) {
+        uint8_t byte = *buffer++;
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            ssd1306_Clock(0);
+            WRITE_REG(SSD1306_MOSI_Port->BSRR,
+                      (byte & 0x80U) ? SSD1306_MOSI_Pin : ((uint32_t)SSD1306_MOSI_Pin << 16));
+            ssd1306_BitDelay();
+            ssd1306_Clock(1);
+            ssd1306_BitDelay();
+            byte <<= 1;
+        }
+    }
+}
+
+static void ssd1306_RestoreIdleClock(void) {
+    /* A byte already ends HIGH. Only a falling edge is needed for LED off. */
+    if (!spi_idle_high) ssd1306_Clock(0);
+}
+
+void ssd1306_SetClockIdleHigh(uint8_t high) {
+    spi_idle_high = high != 0;
+    if (!spi_initialized) return;
+    if (!spi_idle_high) {
+        ssd1306_Clock(0);
+    } else if (!spi_clock_high) {
+        /* Called between complete frames, when D/C (= LCD E) is LOW. */
+        ssd1306_WriteCommand(0xE3);
+    }
+}
+
 static void ssd1306_DcIdleLow(uint8_t edge_index) {
     ssd1306_BeforeDcFallingEdge(edge_index);
     HAL_GPIO_WritePin(SSD1306_DC_Port, SSD1306_DC_Pin, GPIO_PIN_RESET);
@@ -52,23 +105,39 @@ static void ssd1306_DcIdleLow(uint8_t edge_index) {
 void ssd1306_Reset(void) {
     // CS = High (not selected), D/C idle low
     HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET);
+    SSD1306_FrameValid = 0;
+    ssd1306_Clock(0);
+    HAL_GPIO_WritePin(SSD1306_MOSI_Port, SSD1306_MOSI_Pin, GPIO_PIN_RESET);
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Pin = SSD1306_SCK_Pin;
+    HAL_GPIO_Init(SSD1306_SCK_Port, &gpio);
+    gpio.Pin = SSD1306_MOSI_Pin;
+    HAL_GPIO_Init(SSD1306_MOSI_Port, &gpio);
+    spi_initialized = 1;
     // RES is wired to NRST on the base-stand: nothing else to do.
 }
 
 // Send a byte to the command register (D/C must already be low = idle)
 void ssd1306_WriteCommand(uint8_t byte) {
+    ssd1306_Clock(0);
     HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_RESET); // select OLED
-    HAL_SPI_Transmit(&SSD1306_SPI_PORT, (uint8_t *) &byte, 1, HAL_MAX_DELAY);
+    ssd1306_Transmit(&byte, 1);
     HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET); // un-select OLED
+    ssd1306_RestoreIdleClock();
 }
 
 // Send data. Leaves D/C HIGH: the caller must bring it back low with
 // ssd1306_DcIdleLow() (only ssd1306_UpdateScreen() does that).
 void ssd1306_WriteData(uint8_t* buffer, size_t buff_size) {
+    ssd1306_Clock(0);
     HAL_GPIO_WritePin(SSD1306_DC_Port, SSD1306_DC_Pin, GPIO_PIN_SET); // data
     HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_RESET); // select OLED
-    HAL_SPI_Transmit(&SSD1306_SPI_PORT, buffer, buff_size, HAL_MAX_DELAY);
+    ssd1306_Transmit(buffer, buff_size);
     HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET); // un-select OLED
+    ssd1306_RestoreIdleClock();
 }
 
 #else
@@ -78,6 +147,7 @@ void ssd1306_WriteData(uint8_t* buffer, size_t buff_size) {
 
 // Screenbuffer
 static uint8_t SSD1306_Buffer[SSD1306_BUFFER_SIZE];
+static uint8_t SSD1306_PreviousBuffer[SSD1306_BUFFER_SIZE];
 
 // Screen object
 static SSD1306_t SSD1306;
@@ -199,27 +269,57 @@ void ssd1306_Fill(SSD1306_COLOR color) {
     memset(SSD1306_Buffer, (color == Black) ? 0x00 : 0xFF, sizeof(SSD1306_Buffer));
 }
 
-/* Write the screenbuffer with changed to the screen */
-void ssd1306_UpdateScreen(void) {
-    // Horizontal addressing mode is selected in ssd1306_Init() (0x20, 0x00):
-    // set the full window once, then stream the whole buffer.
+/* A pair of data bursts completes one harmless LCD guard instruction. */
+static void ssd1306_UpdateWindow(uint8_t first_col, uint8_t last_col,
+                                 uint8_t first_page, uint8_t last_page,
+                                 uint8_t *buffer, size_t size) {
     ssd1306_WriteCommand(0x21); // column address
-    ssd1306_WriteCommand(0x00 + SSD1306_X_OFFSET_LOWER + (SSD1306_X_OFFSET_UPPER << 4));
-    ssd1306_WriteCommand(SSD1306_WIDTH - 1 + SSD1306_X_OFFSET_LOWER + (SSD1306_X_OFFSET_UPPER << 4));
+    ssd1306_WriteCommand(first_col + SSD1306_X_OFFSET_LOWER + (SSD1306_X_OFFSET_UPPER << 4));
+    ssd1306_WriteCommand(last_col + SSD1306_X_OFFSET_LOWER + (SSD1306_X_OFFSET_UPPER << 4));
     ssd1306_WriteCommand(0x22); // page address
-    ssd1306_WriteCommand(0x00);
-    ssd1306_WriteCommand(SSD1306_HEIGHT/8 - 1);
-
+    ssd1306_WriteCommand(first_page);
+    ssd1306_WriteCommand(last_page);
 #if defined(SSD1306_USE_SPI)
-    // Two bursts -> exactly two D/C falling edges per frame (see top of file)
-    const size_t half = SSD1306_BUFFER_SIZE / 2;
-    ssd1306_WriteData(&SSD1306_Buffer[0], half);
+    const size_t half = size > 1 ? size / 2 : 1;
+    ssd1306_WriteData(buffer, half);
     ssd1306_DcIdleLow(0);
-    ssd1306_WriteData(&SSD1306_Buffer[half], SSD1306_BUFFER_SIZE - half);
+    /* A one-byte window wraps to the same byte, so repeating it is harmless
+     * and preserves the pair of LCD enable edges without an empty transfer. */
+    ssd1306_WriteData(size > 1 ? buffer + half : buffer,
+                      size > 1 ? size - half : 1);
     ssd1306_DcIdleLow(1);
 #else
-    ssd1306_WriteData(SSD1306_Buffer, SSD1306_BUFFER_SIZE);
+    ssd1306_WriteData(buffer, size);
 #endif
+}
+
+/* Send only runs of changed columns. Small, fast transfers avoid visible
+ * pulses on LD2 (SCLK) and the LCD backlight (OLED CS) during movement. */
+void ssd1306_UpdateScreen(void) {
+    if (!SSD1306_FrameValid) {
+        ssd1306_UpdateWindow(0, SSD1306_WIDTH - 1, 0, SSD1306_HEIGHT / 8 - 1,
+                             SSD1306_Buffer, SSD1306_BUFFER_SIZE);
+        memcpy(SSD1306_PreviousBuffer, SSD1306_Buffer, sizeof SSD1306_Buffer);
+        SSD1306_FrameValid = 1;
+        return;
+    }
+    for (uint8_t page = 0; page < SSD1306_HEIGHT / 8; page++) {
+        const size_t base = (size_t)page * SSD1306_WIDTH;
+        uint16_t col = 0;
+        while (col < SSD1306_WIDTH) {
+            while (col < SSD1306_WIDTH &&
+                   SSD1306_Buffer[base + col] == SSD1306_PreviousBuffer[base + col]) col++;
+            if (col == SSD1306_WIDTH) break;
+            const uint16_t first = col;
+            while (col < SSD1306_WIDTH &&
+                   SSD1306_Buffer[base + col] != SSD1306_PreviousBuffer[base + col]) col++;
+            const size_t count = col - first;
+            ssd1306_UpdateWindow((uint8_t)first, (uint8_t)(col - 1), page, page,
+                                 &SSD1306_Buffer[base + first], count);
+            memcpy(&SSD1306_PreviousBuffer[base + first],
+                    &SSD1306_Buffer[base + first], count);
+        }
+    }
 }
 
 /*

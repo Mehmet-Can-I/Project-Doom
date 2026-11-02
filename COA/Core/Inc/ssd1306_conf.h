@@ -19,6 +19,11 @@
 #define SSD1306_USE_SPI
 
 // SPI Configuration
+// The driver clocks these pins as GPIO so LD2 never inserts a partial byte.
+#define SSD1306_SCK_Port         GPIOA
+#define SSD1306_SCK_Pin          GPIO_PIN_5
+#define SSD1306_MOSI_Port        GPIOA
+#define SSD1306_MOSI_Pin         GPIO_PIN_7
 #define SSD1306_SPI_PORT        hspi1
 #define SSD1306_CS_Port         GPIOB
 #define SSD1306_CS_Pin          GPIO_PIN_6

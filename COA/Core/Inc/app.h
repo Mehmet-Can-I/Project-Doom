@@ -5,10 +5,11 @@
  * OLED (ssd1306), LCD (lcd_hd44780), keypad (ADC) and RGB LED (PWM).
  *
  * Feature map for the course:
- *   OLED graphic screen  -> playfield               (SPI1, ssd1306.c)
+ *   OLED graphic screen  -> playfield               (GPIO SPI, ssd1306.c)
  *   LCD display          -> score / best / status   (GPIO 4-bit, lcd_hd44780.c)
  *   ADC                  -> keypad resistor ladder  (ADC1_IN5, keypad.c)
  *   PWM + RGB LED        -> blink when eating       (TIM1 CH1N..CH3N, rgb_led.c)
+ *   Built-in green LD2   -> fruit flash / death blink (PA5 shared with OLED SCK)
  *   Interrupts           -> TIM6 1 kHz game tick, EXTI13 blue button (pause)
  *   UART                 -> debug log on ST-LINK VCP 115200 8N1 (printf)
  */

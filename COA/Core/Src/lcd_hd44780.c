@@ -21,7 +21,7 @@
 #define LCD_2LINE          0x08
 #define LCD_5x8DOTS        0x00
 
-/* The command the LCD receives "for free" on every OLED frame (see
+/* The command the LCD receives "for free" on every OLED window (see
  * ssd1306_BeforeDcFallingEdge below). It must be harmless and must match the
  * display state we want: display ON, cursor OFF, blink OFF. */
 #define LCD_GUARD_COMMAND  (LCD_DISPLAYCONTROL | LCD_DISPLAYON) /* 0x0C */
@@ -89,6 +89,9 @@ static void lcd_data(uint8_t c)      { lcd_write(1, c); }
  */
 void ssd1306_BeforeDcFallingEdge(uint8_t edge_index)
 {
+  /* Dirty windows can be only one byte long. Let the previous LCD guard
+   * command finish before latching the next command's first nibble. */
+  if (edge_index == 0) delay_us(50);
   HAL_GPIO_WritePin(LCD_RS_GPIO_Port, LCD_RS_Pin, GPIO_PIN_RESET);
   set_data_nibble(edge_index == 0 ? (LCD_GUARD_COMMAND >> 4) : (LCD_GUARD_COMMAND & 0x0F));
   delay_us(1);   /* address/data set-up time before the falling edge */

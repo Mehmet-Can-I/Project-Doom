@@ -209,6 +209,9 @@ uint8_t ssd1306_GetDisplayOn();
  *        Weak/empty by default. edge_index is 0 or 1 (two edges per frame).
  */
 void ssd1306_BeforeDcFallingEdge(uint8_t edge_index);
+/* Set the idle SCLK level for the shared built-in LED. Call between complete
+ * screen updates, while D/C is LOW. LED-on emits a complete E3h NOP byte. */
+void ssd1306_SetClockIdleHigh(uint8_t high);
 void ssd1306_Reset(void);
 void ssd1306_WriteCommand(uint8_t byte);
 void ssd1306_WriteData(uint8_t* buffer, size_t buff_size);
