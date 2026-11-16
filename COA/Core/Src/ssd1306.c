@@ -1,58 +1,45 @@
+/*
+ * ssd1306.c  -  FEATURE 1: OLED graphic screen (SSD1309, 128x64, SPI)
+ *
+ * Based on the lab library (afiskon/stm32-ssd1306). The drawing functions
+ * (pixels, lines, rectangles, text) are unchanged. The LOW-LEVEL part below
+ * was rewritten for the lab base-stand, where three OLED wires are shared:
+ *
+ *   PA5  OLED SCLK  = green LED LD2          -> FEATURE 4 (status_led.c)
+ *   PC7  OLED D/C   = LCD shield "E" (D9)    -> FEATURE 2 (lcd_hd44780.c)
+ *   PB6  OLED CS    = LCD backlight (D10)    -> kept high when idle
+ *   RES  tied to NRST: no reset GPIO to drive (PA9 is LCD_RS!)
+ *
+ * 1) SPI is "bit-banged" on PA5/PA7 (GPIO), not done by the SPI1 peripheral,
+ *    so we control the clock level between bytes: idle LOW = LD2 off,
+ *    idle HIGH = LD2 on. A byte always ends with its 8th rising edge,
+ *    so the LED level never adds an extra clock pulse.
+ * 2) The HD44780 latches a nibble on every FALLING edge of E (= OLED D/C).
+ *    D/C stays LOW when idle, and every screen window is sent as exactly two
+ *    data bursts -> exactly two falling edges = one complete 4-bit LCD byte.
+ *    Before each edge, ssd1306_BeforeDcFallingEdge() lets the LCD driver put
+ *    a harmless command (display ON) on the LCD data lines.
+ */
+
 #include "ssd1306.h"
 #include <math.h>
 #include <stdlib.h>
-#include <string.h>  // For memcpy
+#include <string.h>
 
-static uint8_t SSD1306_FrameValid;
+#if !defined(SSD1306_USE_SPI)
+#error "This project drives the OLED over (bit-banged) SPI: define SSD1306_USE_SPI"
+#endif
 
-#if defined(SSD1306_USE_I2C)
+/* ------------------------------------------------------- low level: pins */
 
-void ssd1306_Reset(void) {
-    /* for I2C - do nothing */
-}
-
-// Send a byte to the command register
-void ssd1306_WriteCommand(uint8_t byte) {
-    HAL_I2C_Mem_Write(&SSD1306_I2C_PORT, SSD1306_I2C_ADDR, 0x00, 1, &byte, 1, HAL_MAX_DELAY);
-}
-
-// Send data
-void ssd1306_WriteData(uint8_t* buffer, size_t buff_size) {
-    HAL_I2C_Mem_Write(&SSD1306_I2C_PORT, SSD1306_I2C_ADDR, 0x40, 1, buffer, buff_size, HAL_MAX_DELAY);
-}
-
-#elif defined(SSD1306_USE_SPI)
-
-/*
- * --- Project modification (snake-prototype) --------------------------------
- * On the lab base-stand the OLED RES pin is tied to NRST, so there is no
- * reset GPIO to drive (the lab test code drove PA9, which is LCD_RS on the
- * LCD-Keypad shield -> must NOT be touched here).
- *
- * The OLED D/C line (PC7) is the same wire as the LCD-Keypad shield "E" pin
- * (Arduino D9). The HD44780 latches a nibble on every FALLING edge of E,
- * so every D/C high->low transition made by this driver is seen by the LCD.
- * To keep the LCD in sync we:
- *   - keep D/C LOW when idle (commands are sent with D/C low),
- *   - send each changed window in exactly two data bursts, so it produces
- *     exactly two falling edges (= one complete 4-bit LCD byte),
- *   - call ssd1306_BeforeDcFallingEdge(0/1) just before each falling edge,
- *     so the LCD driver can put a harmless command on its data lines.
- * ---------------------------------------------------------------------------
- */
-
-/* Weak default: nothing shares the D/C line. Overridden in lcd_hd44780.c */
+/* Weak default: nothing shares D/C. The LCD driver overrides it. */
 __weak void ssd1306_BeforeDcFallingEdge(uint8_t edge_index) {
     (void)edge_index;
 }
 
-/* LD2 shares SCLK. Use GPIO SPI so a byte can end with its eighth rising
- * edge HIGH, keeping LD2 lit without adding an unframed ninth clock edge.
- * Turning LD2 on while idle sends the controller's harmless E3h NOP byte.
- * PA5/PA7 stay GPIO outputs; the hardware SPI peripheral is not enabled. */
 static uint8_t spi_initialized;
-static uint8_t spi_idle_high;
-static uint8_t spi_clock_high;
+static uint8_t spi_idle_high;    /* wanted idle clock level (= LD2 state) */
+static uint8_t spi_clock_high;   /* current clock level                   */
 
 __STATIC_FORCEINLINE void ssd1306_Clock(uint8_t high) {
     WRITE_REG(SSD1306_SCK_Port->BSRR,
@@ -66,45 +53,64 @@ __STATIC_FORCEINLINE void ssd1306_BitDelay(void) {
     __NOP(); __NOP(); __NOP(); __NOP();
 }
 
+/* Software SPI, mode 0, MSB first: data set while SCLK low, read on rising.
+ *
+ * SCLK is also LD2. While LD2 must be OFF, every clock pulse briefly lights
+ * it, so the snake made the LED flicker at each step. To avoid that, the
+ * clock goes back LOW right after a SHORT high pulse: 4 NOPs + the store,
+ * about 60-90 ns, just above the SSD1309 minimum tCLKH = 50 ns (datasheet,
+ * serial interface timing). All the loop work is done while SCLK is LOW.
+ * While LD2 must be ON, SCLK simply stays HIGH after each bit (as before). */
 static void ssd1306_Transmit(const uint8_t *buffer, size_t size) {
+    const uint32_t sck_rise      = SSD1306_SCK_Pin;
+    const uint32_t sck_fall      = (uint32_t)SSD1306_SCK_Pin << 16;
+    const uint32_t sck_after_bit = spi_idle_high ? sck_rise : sck_fall;
+
     while (size--) {
         uint8_t byte = *buffer++;
         for (uint8_t bit = 0; bit < 8; bit++) {
-            ssd1306_Clock(0);
+            WRITE_REG(SSD1306_SCK_Port->BSRR, sck_fall);         /* SCLK low  */
             WRITE_REG(SSD1306_MOSI_Port->BSRR,
                       (byte & 0x80U) ? SSD1306_MOSI_Pin : ((uint32_t)SSD1306_MOSI_Pin << 16));
-            ssd1306_BitDelay();
-            ssd1306_Clock(1);
-            ssd1306_BitDelay();
+            ssd1306_BitDelay();                                  /* set-up    */
+            WRITE_REG(SSD1306_SCK_Port->BSRR, sck_rise);         /* OLED reads the bit */
+            __NOP(); __NOP(); __NOP(); __NOP();                  /* tCLKH     */
+            WRITE_REG(SSD1306_SCK_Port->BSRR, sck_after_bit);    /* LD2 off: low again */
             byte <<= 1;
         }
     }
+    spi_clock_high = spi_idle_high;
 }
 
+/* After a transfer SCLK is HIGH only if LD2 is on; make sure it is LOW otherwise. */
 static void ssd1306_RestoreIdleClock(void) {
-    /* A byte already ends HIGH. Only a falling edge is needed for LED off. */
     if (!spi_idle_high) ssd1306_Clock(0);
 }
 
+/* FEATURE 4 hook: LD2 on/off = SCLK idle HIGH/LOW. Call between frames. */
 void ssd1306_SetClockIdleHigh(uint8_t high) {
     spi_idle_high = high != 0;
     if (!spi_initialized) return;
     if (!spi_idle_high) {
-        ssd1306_Clock(0);
+        ssd1306_Clock(0);                 /* LED off: just drop the clock */
     } else if (!spi_clock_high) {
-        /* Called between complete frames, when D/C (= LCD E) is LOW. */
+        /* LED on: raise the clock with a complete byte, the SSD1309 NOP
+         * command E3h, so the OLED never sees a half byte. */
         ssd1306_WriteCommand(0xE3);
     }
 }
 
+/* Bring D/C back to idle LOW (= LCD E falling edge, see top of file). */
 static void ssd1306_DcIdleLow(uint8_t edge_index) {
     ssd1306_BeforeDcFallingEdge(edge_index);
     HAL_GPIO_WritePin(SSD1306_DC_Port, SSD1306_DC_Pin, GPIO_PIN_RESET);
 }
 
+static uint8_t SSD1306_FrameValid;   /* 0 = next update sends the full screen */
+
+/* Configure PA5/PA7 as plain GPIO outputs (SPI1 peripheral is not used). */
 void ssd1306_Reset(void) {
-    // CS = High (not selected), D/C idle low
-    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET);   /* not selected */
     SSD1306_FrameValid = 0;
     ssd1306_Clock(0);
     HAL_GPIO_WritePin(SSD1306_MOSI_Port, SSD1306_MOSI_Pin, GPIO_PIN_RESET);
@@ -117,32 +123,28 @@ void ssd1306_Reset(void) {
     gpio.Pin = SSD1306_MOSI_Pin;
     HAL_GPIO_Init(SSD1306_MOSI_Port, &gpio);
     spi_initialized = 1;
-    // RES is wired to NRST on the base-stand: nothing else to do.
+    /* RES is wired to NRST on the base-stand: nothing else to do. */
 }
 
-// Send a byte to the command register (D/C must already be low = idle)
+/* Command byte (D/C is already LOW = idle) */
 void ssd1306_WriteCommand(uint8_t byte) {
     ssd1306_Clock(0);
-    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_RESET); // select OLED
+    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_RESET);  /* select */
     ssd1306_Transmit(&byte, 1);
-    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET); // un-select OLED
+    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET);    /* release */
     ssd1306_RestoreIdleClock();
 }
 
-// Send data. Leaves D/C HIGH: the caller must bring it back low with
-// ssd1306_DcIdleLow() (only ssd1306_UpdateScreen() does that).
+/* Data burst. Leaves D/C HIGH: the caller brings it back low with
+ * ssd1306_DcIdleLow() (only ssd1306_UpdateWindow() does that). */
 void ssd1306_WriteData(uint8_t* buffer, size_t buff_size) {
     ssd1306_Clock(0);
-    HAL_GPIO_WritePin(SSD1306_DC_Port, SSD1306_DC_Pin, GPIO_PIN_SET); // data
-    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_RESET); // select OLED
+    HAL_GPIO_WritePin(SSD1306_DC_Port, SSD1306_DC_Pin, GPIO_PIN_SET);    /* data */
+    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_RESET);  /* select */
     ssd1306_Transmit(buffer, buff_size);
-    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET); // un-select OLED
+    HAL_GPIO_WritePin(SSD1306_CS_Port, SSD1306_CS_Pin, GPIO_PIN_SET);    /* release */
     ssd1306_RestoreIdleClock();
 }
-
-#else
-#error "You should define SSD1306_USE_SPI or SSD1306_USE_I2C macro"
-#endif
 
 
 // Screenbuffer
@@ -269,34 +271,36 @@ void ssd1306_Fill(SSD1306_COLOR color) {
     memset(SSD1306_Buffer, (color == Black) ? 0x00 : 0xFF, sizeof(SSD1306_Buffer));
 }
 
-/* A pair of data bursts completes one harmless LCD guard instruction. */
+/* Send one rectangle of screen memory (columns x pages) to the OLED.
+ * Sent as TWO data bursts so D/C makes exactly two falling edges, i.e. the
+ * LCD receives one complete (harmless) command per window. */
 static void ssd1306_UpdateWindow(uint8_t first_col, uint8_t last_col,
                                  uint8_t first_page, uint8_t last_page,
                                  uint8_t *buffer, size_t size) {
-    ssd1306_WriteCommand(0x21); // column address
+    ssd1306_WriteCommand(0x21); // column address range
     ssd1306_WriteCommand(first_col + SSD1306_X_OFFSET_LOWER + (SSD1306_X_OFFSET_UPPER << 4));
     ssd1306_WriteCommand(last_col + SSD1306_X_OFFSET_LOWER + (SSD1306_X_OFFSET_UPPER << 4));
-    ssd1306_WriteCommand(0x22); // page address
+    ssd1306_WriteCommand(0x22); // page address range
     ssd1306_WriteCommand(first_page);
     ssd1306_WriteCommand(last_page);
-#if defined(SSD1306_USE_SPI)
+
     const size_t half = size > 1 ? size / 2 : 1;
+    /* A one-byte window wraps to the same byte, so sending it twice is
+     * harmless and still gives the two edges the LCD needs. */
     ssd1306_WriteData(buffer, half);
-    ssd1306_DcIdleLow(0);
-    /* A one-byte window wraps to the same byte, so repeating it is harmless
-     * and preserves the pair of LCD enable edges without an empty transfer. */
+    ssd1306_DcIdleLow(0);          /* falling edge 1 -> LCD high nibble 0x0 */
     ssd1306_WriteData(size > 1 ? buffer + half : buffer,
                       size > 1 ? size - half : 1);
-    ssd1306_DcIdleLow(1);
-#else
-    ssd1306_WriteData(buffer, size);
-#endif
+    ssd1306_DcIdleLow(1);          /* falling edge 2 -> LCD low nibble 0xC */
 }
 
-/* Send only runs of changed columns. Small, fast transfers avoid visible
- * pulses on LD2 (SCLK) and the LCD backlight (OLED CS) during movement. */
+/* Push the frame buffer to the OLED, sending only what changed.
+ * The first call sends the whole screen; after that, for each 8-pixel page,
+ * only the runs of columns that differ from the previous frame are sent.
+ * A snake move changes only a few bytes -> very short transfers, so LD2
+ * (SCLK) and the LCD backlight (CS) do not visibly flicker. */
 void ssd1306_UpdateScreen(void) {
-    if (!SSD1306_FrameValid) {
+    if (!SSD1306_FrameValid) {   /* first time: send the whole screen */
         ssd1306_UpdateWindow(0, SSD1306_WIDTH - 1, 0, SSD1306_HEIGHT / 8 - 1,
                              SSD1306_Buffer, SSD1306_BUFFER_SIZE);
         memcpy(SSD1306_PreviousBuffer, SSD1306_Buffer, sizeof SSD1306_Buffer);
@@ -307,9 +311,11 @@ void ssd1306_UpdateScreen(void) {
         const size_t base = (size_t)page * SSD1306_WIDTH;
         uint16_t col = 0;
         while (col < SSD1306_WIDTH) {
+            /* skip unchanged columns */
             while (col < SSD1306_WIDTH &&
                    SSD1306_Buffer[base + col] == SSD1306_PreviousBuffer[base + col]) col++;
             if (col == SSD1306_WIDTH) break;
+            /* find the end of the changed run */
             const uint16_t first = col;
             while (col < SSD1306_WIDTH &&
                    SSD1306_Buffer[base + col] != SSD1306_PreviousBuffer[base + col]) col++;
@@ -317,7 +323,7 @@ void ssd1306_UpdateScreen(void) {
             ssd1306_UpdateWindow((uint8_t)first, (uint8_t)(col - 1), page, page,
                                  &SSD1306_Buffer[base + first], count);
             memcpy(&SSD1306_PreviousBuffer[base + first],
-                    &SSD1306_Buffer[base + first], count);
+                   &SSD1306_Buffer[base + first], count);
         }
     }
 }

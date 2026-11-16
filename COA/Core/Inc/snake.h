@@ -33,7 +33,6 @@ SnakeEvent Snake_Step(void);
 void       Snake_Draw(void);
 
 uint16_t   Snake_GetScore(void);
-uint16_t   Snake_GetLength(void);
 /* Milliseconds between two moves; decreases as the score grows */
 uint16_t   Snake_GetStepPeriodMs(void);
 

@@ -107,8 +107,7 @@ int main(void)
   MX_TIM6_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  App_Init();
-  HAL_TIM_Base_Start_IT(&htim6);   /* 1 kHz game tick */
+  App_Init();      /* game init (also starts the TIM6 game tick) */
   /* USER CODE END 2 */
 
   /* Initialize USER push-button, will be used to trigger an interrupt each time it's pressed.*/
@@ -509,27 +508,7 @@ int __io_putchar(int ch)
   return ch;
 }
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if (htim->Instance == TIM6)
-  {
-    App_OnTick1ms();
-  }
-}
-
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-  static uint32_t last_ms;
-  if (GPIO_Pin == B1_Pin)
-  {
-    uint32_t now = HAL_GetTick();
-    if (now - last_ms > 200)       /* crude debounce of the blue button */
-    {
-      last_ms = now;
-      App_OnUserButton();
-    }
-  }
-}
+/* The interrupt callbacks (TIM6 game tick, EXTI blue button) are in app.c */
 
 /* USER CODE END 4 */
 

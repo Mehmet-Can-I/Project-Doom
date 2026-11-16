@@ -1,17 +1,16 @@
 /*
  * app.h
  *
- * Snake application: state machine + glue between game logic (snake.c),
- * OLED (ssd1306), LCD (lcd_hd44780), keypad (ADC) and RGB LED (PWM).
+ * Snake application: game state machine + glue between the modules.
  *
  * Feature map for the course:
- *   OLED graphic screen  -> playfield               (GPIO SPI, ssd1306.c)
- *   LCD display          -> score / best / status   (GPIO 4-bit, lcd_hd44780.c)
- *   ADC                  -> keypad resistor ladder  (ADC1_IN5, keypad.c)
- *   PWM + RGB LED        -> blink when eating       (TIM1 CH1N..CH3N, rgb_led.c)
- *   Built-in green LD2   -> fruit flash / death blink (PA5 shared with OLED SCK)
- *   Interrupts           -> TIM6 1 kHz game tick, EXTI13 blue button (pause)
- *   UART                 -> debug log on ST-LINK VCP 115200 8N1 (printf)
+ *   1. OLED graphic screen -> playfield              (ssd1306.c, snake.c)
+ *   2. LCD display         -> score / best / status  (lcd_hd44780.c)
+ *   3. ADC                 -> 5 keypad buttons on one analog pin (keypad.c)
+ *   4. LED LD2             -> blinks on fruit / death (status_led.c)
+ *   5. Interrupts          -> TIM6 1 kHz game tick + EXTI13 blue button (app.c)
+ *
+ * Extras: PWM RGB LED on TIM1 (rgb_led.c), UART debug log (printf, 115200 8N1).
  */
 
 #ifndef INC_APP_H_
@@ -19,11 +18,7 @@
 
 #include "main.h"
 
-void App_Init(void);
-void App_Loop(void);           /* call forever from main() */
-
-/* Called from interrupt context */
-void App_OnTick1ms(void);      /* TIM6 update, 1 kHz */
-void App_OnUserButton(void);   /* B1 (PC13) falling edge */
+void App_Init(void);   /* once, after the CubeMX peripheral init */
+void App_Loop(void);   /* forever, from main()'s while(1)         */
 
 #endif /* INC_APP_H_ */

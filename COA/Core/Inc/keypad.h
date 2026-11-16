@@ -1,13 +1,23 @@
 /*
- * keypad.h
+ * keypad.h  -  FEATURE 3: the 5 shield buttons read as ONE analog signal (ADC)
  *
- * 5 push-buttons of the LCD Keypad Shield, read through ONE analog input:
- * the buttons short different points of a resistor ladder to GND, so each
- * key gives a different voltage on A0 = PA0 = ADC1_IN5.
+ * The LCD Keypad Shield does not give one GPIO per button. All five buttons
+ * sit on a resistor ladder (voltage divider) connected to a single pin,
+ * A0 = PA0 = ADC1_IN5. Each button shorts a different point of the ladder to
+ * GND, so each button produces a different voltage on A0:
  *
- * ADC thresholds in keypad.c are calibrated on the connected lab shield.
- * Its released reading is about 3717, rather than the full-scale 4095;
- * SELECT reads about 2969, so the demo's thresholds do not apply directly.
+ *        button   | ADC reading (12-bit, 0..4095) measured on our shield
+ *        ---------+---------------------------------------------------
+ *        RIGHT    |    0
+ *        UP       | ~ 745
+ *        DOWN     | ~1560
+ *        LEFT     | ~2200
+ *        SELECT   | ~2969
+ *        released | ~3717
+ *
+ * The firmware converts this voltage with ADC1 and decides which button is
+ * pressed by comparing the value with thresholds placed half-way between two
+ * neighbouring levels (see keypad.c).
  */
 
 #ifndef INC_KEYPAD_H_
@@ -25,13 +35,15 @@ typedef enum {
 } Key;
 
 void     Keypad_Init(ADC_HandleTypeDef *hadc);
-/* Raw 12-bit ADC value (0..4095), or 0xFFFF on ADC error */
+
+/* One ADC conversion: raw 12-bit value (0..4095), or 0xFFFF on ADC error */
 uint16_t Keypad_ReadRaw(void);
-/* Key currently held (no debounce) */
+
+/* Button held right now (no debounce) */
 Key      Keypad_ReadKey(void);
-/* Debounced "key was just pressed" event. Call it every ~10 ms.
- * One event per press; all keys must be released before the next event.
- * Returns KEY_NONE when nothing new happened. */
+
+/* Debounced "a button was just pressed" event. Call it every 10 ms.
+ * Returns each press only once; KEY_NONE when nothing new happened. */
 Key      Keypad_PollEvent(void);
 
 #endif /* INC_KEYPAD_H_ */

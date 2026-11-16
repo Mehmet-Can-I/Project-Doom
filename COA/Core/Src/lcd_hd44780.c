@@ -1,14 +1,15 @@
 /*
- * lcd_hd44780.c
+ * lcd_hd44780.c  -  FEATURE 2: HD44780 16x2 LCD driver, 4-bit mode
  *
- * HD44780 16x2 LCD driver, 4-bit interface. See lcd_hd44780.h for wiring.
+ * A byte is sent as two 4-bit halves (high nibble first) on DB4..DB7.
+ * The LCD reads each nibble on the FALLING edge of E. RS selects
+ * command (0) or character data (1).
  */
 
 #include "lcd_hd44780.h"
 #include "main.h"
-#include <string.h>
 
-/* HD44780 instructions */
+/* HD44780 instructions (datasheet table 6) */
 #define LCD_CLEARDISPLAY   0x01
 #define LCD_ENTRYMODESET   0x04
 #define LCD_DISPLAYCONTROL 0x08
@@ -21,14 +22,16 @@
 #define LCD_2LINE          0x08
 #define LCD_5x8DOTS        0x00
 
-/* The command the LCD receives "for free" on every OLED window (see
- * ssd1306_BeforeDcFallingEdge below). It must be harmless and must match the
- * display state we want: display ON, cursor OFF, blink OFF. */
-#define LCD_GUARD_COMMAND  (LCD_DISPLAYCONTROL | LCD_DISPLAYON) /* 0x0C */
+/* E is shared with the OLED D/C line, so every OLED screen update also
+ * clocks one byte into the LCD (see ssd1306_BeforeDcFallingEdge below).
+ * We make that byte a harmless command that keeps the state we want:
+ * display ON, cursor OFF, blink OFF = 0x0C. */
+#define LCD_GUARD_COMMAND  (LCD_DISPLAYCONTROL | LCD_DISPLAYON)
 
-/* ---------------------------------------------------------------- delays */
+/* ------------------------------------------------------------------ delays */
 
-void delay_us(uint32_t us)
+/* Busy-wait using the Cortex-M4 cycle counter (80 cycles = 1 us). */
+static void delay_us(uint32_t us)
 {
   const uint32_t start = DWT->CYCCNT;
   const uint32_t ticks = us * (SystemCoreClock / 1000000U);
@@ -42,7 +45,7 @@ static void dwt_init(void)
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
-/* ---------------------------------------------------------------- low level */
+/* --------------------------------------------------------------- low level */
 
 static void set_data_nibble(uint8_t nibble)
 {
@@ -54,7 +57,7 @@ static void set_data_nibble(uint8_t nibble)
 
 static void pulse_enable(void)
 {
-  /* E idle is LOW (= OLED D/C idle). Latch happens on the falling edge. */
+  /* E idles LOW (= OLED D/C idle). The LCD latches on the falling edge. */
   HAL_GPIO_WritePin(LCD_E_GPIO_Port, LCD_E_Pin, GPIO_PIN_SET);
   delay_us(1);   /* PW_EH >= 450 ns */
   HAL_GPIO_WritePin(LCD_E_GPIO_Port, LCD_E_Pin, GPIO_PIN_RESET);
@@ -69,8 +72,8 @@ static void write4bits(uint8_t nibble)
 
 static void lcd_write(uint8_t rs, uint8_t value)
 {
-  /* Wait BEFORE writing: covers the previous LCD instruction and also the
-   * guard command injected by the last OLED frame (both take <= 37 us). */
+  /* Wait BEFORE writing: covers the previous instruction and also the guard
+   * command sent by the last OLED update (each takes <= 37 us). */
   delay_us(50);
   HAL_GPIO_WritePin(LCD_RS_GPIO_Port, LCD_RS_Pin, rs ? GPIO_PIN_SET : GPIO_PIN_RESET);
   write4bits(value >> 4);
@@ -80,24 +83,23 @@ static void lcd_write(uint8_t rs, uint8_t value)
 static void lcd_command(uint8_t cmd) { lcd_write(0, cmd); }
 static void lcd_data(uint8_t c)      { lcd_write(1, c); }
 
-/* ------------------------------------------------- shared PC7 (E / OLED D/C)
- * Called by the OLED driver right before it pulls PC7 low. The LCD will latch
- * whatever is on RS/DB4..7 at that moment, so we present the two nibbles of
- * LCD_GUARD_COMMAND (edge 0 = high nibble, edge 1 = low nibble).
- * Everything runs from the main loop, so this never interleaves with an
- * LCD byte in progress.
+/* -------------------------------------------- shared PC7 (LCD E / OLED D/C)
+ * Called by the OLED driver just before it pulls PC7 low. The LCD will
+ * latch whatever is on RS/DB4..7 at that moment, so we present the two
+ * nibbles of LCD_GUARD_COMMAND (edge 0 = high nibble, edge 1 = low nibble).
+ * Everything runs from the main loop, so this never cuts an LCD byte.
  */
 void ssd1306_BeforeDcFallingEdge(uint8_t edge_index)
 {
-  /* Dirty windows can be only one byte long. Let the previous LCD guard
-   * command finish before latching the next command's first nibble. */
+  /* Windows can be one byte long: let the previous guard command finish
+   * before latching the first nibble of the next one. */
   if (edge_index == 0) delay_us(50);
   HAL_GPIO_WritePin(LCD_RS_GPIO_Port, LCD_RS_Pin, GPIO_PIN_RESET);
   set_data_nibble(edge_index == 0 ? (LCD_GUARD_COMMAND >> 4) : (LCD_GUARD_COMMAND & 0x0F));
-  delay_us(1);   /* address/data set-up time before the falling edge */
+  delay_us(1);   /* set-up time before the falling edge */
 }
 
-/* ---------------------------------------------------------------- public */
+/* ------------------------------------------------------------------ public */
 
 void LCD_Init(void)
 {
@@ -132,15 +134,10 @@ void LCD_SetCursor(uint8_t col, uint8_t row)
   lcd_command(LCD_SETDDRAMADDR | (col + row_offset[row]));
 }
 
-void LCD_Print(const char *s)
-{
-  while (*s) lcd_data((uint8_t)*s++);
-}
-
 void LCD_PrintLine(uint8_t row, const char *s)
 {
   LCD_SetCursor(0, row);
   uint8_t n = 0;
   while (*s && n < LCD_COLS) { lcd_data((uint8_t)*s++); n++; }
-  while (n++ < LCD_COLS) lcd_data(' ');
+  while (n++ < LCD_COLS) lcd_data(' ');   /* pad: overwrite old text */
 }

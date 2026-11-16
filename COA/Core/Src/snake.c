@@ -1,5 +1,10 @@
 /*
- * snake.c
+ * snake.c  -  game logic + drawing of the playfield into the OLED buffer
+ *
+ * Grid of 31 x 15 cells, 4x4 px each, inside a 1 px border on the 128x64 OLED.
+ * The body is a ring buffer (no memmove when the snake moves): body[head]
+ * is the head, older segments are behind it. occupied[][] gives an O(1)
+ * "is this cell part of the snake?" test for collisions and food placement.
  */
 
 #include "snake.h"
@@ -13,8 +18,6 @@
 
 typedef struct { uint8_t x, y; } Cell;
 
-/* Body stored as a ring buffer: body[head] is the head, older segments
- * follow backwards. occupied[][] gives O(1) self-collision checks. */
 static Cell     body[SNAKE_MAX_LEN];
 static uint16_t head;          /* index of head in body[] */
 static uint16_t length;
@@ -52,6 +55,7 @@ static void place_food(void)
   } while (occupied[food.y][food.x]);
 }
 
+/* FEATURE 1: cell (cx,cy) -> pixels. 2 px offset = 1 px border + 1 px gap */
 static void draw_cell_filled(uint8_t cx, uint8_t cy)
 {
   uint8_t x = (uint8_t)(2 + cx * SNAKE_CELL_PX);
@@ -140,6 +144,8 @@ SnakeEvent Snake_Step(void)
   return SNAKE_EVT_NONE;
 }
 
+/* FEATURE 1: redraw the whole playfield into the frame buffer.
+ * ssd1306_UpdateScreen() then only transmits the bytes that changed. */
 void Snake_Draw(void)
 {
   ssd1306_Fill(Black);
@@ -155,7 +161,6 @@ void Snake_Draw(void)
 }
 
 uint16_t Snake_GetScore(void)  { return score; }
-uint16_t Snake_GetLength(void) { return length; }
 
 uint16_t Snake_GetStepPeriodMs(void)
 {
